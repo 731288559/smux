@@ -5,6 +5,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/pkg/errors"
@@ -59,33 +60,48 @@ func (s *Stream) ID() uint32 {
 
 // Read implements net.Conn
 func (s *Stream) Read(b []byte) (n int, err error) {
+	for {
+		n, err = s.ReadNoWait(b)
+		if err == syscall.EAGAIN {
+			if ew := s.waitRead(); ew != nil {
+				return 0, ew
+			}
+		} else {
+			return n, err
+		}
+	}
+}
+
+// ReadNoWait is the nonblocking version of Read
+func (s *Stream) ReadNoWait(b []byte) (n int, err error) {
 	if len(b) == 0 {
 		return 0, nil
 	}
 
-	for {
-		s.bufferLock.Lock()
-		if len(s.buffers) > 0 {
-			n = copy(b, s.buffers[0])
-			s.buffers[0] = s.buffers[0][n:]
-			if len(s.buffers[0]) == 0 {
-				s.buffers[0] = nil
-				s.buffers = s.buffers[1:]
-				// full recycle
-				defaultAllocator.Put(s.heads[0])
-				s.heads = s.heads[1:]
-			}
+	s.bufferLock.Lock()
+	if len(s.buffers) > 0 {
+		n = copy(b, s.buffers[0])
+		s.buffers[0] = s.buffers[0][n:]
+		if len(s.buffers[0]) == 0 {
+			s.buffers[0] = nil
+			s.buffers = s.buffers[1:]
+			// full recycle
+			defaultAllocator.Put(s.heads[0])
+			s.heads = s.heads[1:]
 		}
-		s.bufferLock.Unlock()
+	}
+	s.bufferLock.Unlock()
 
-		if n > 0 {
-			s.sess.returnTokens(n)
-			return n, nil
-		}
+	if n > 0 {
+		s.sess.returnTokens(n)
+		return n, nil
+	}
 
-		if ew := s.waitRead(); ew != nil {
-			return 0, ew
-		}
+	select {
+	case <-s.die:
+		return 0, errors.WithStack(io.EOF)
+	default:
+		return 0, syscall.EAGAIN
 	}
 }
 
@@ -263,6 +279,10 @@ func (s *Stream) pushBytes(buf []byte) (written int, err error) {
 	s.bufferLock.Lock()
 	s.buffers = append(s.buffers, buf)
 	s.heads = append(s.heads, buf)
+	// Edge trigger
+	if len(s.buffers) == 1 {
+		s.sess.notifyPoll(s)
+	}
 	s.bufferLock.Unlock()
 	return
 }

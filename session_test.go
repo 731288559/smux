@@ -13,6 +13,7 @@ import (
 	_ "net/http/pprof"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -93,6 +94,66 @@ func TestEcho(t *testing.T) {
 		t.Fatal("data mimatch")
 	}
 	session.Close()
+}
+
+func TestPoll(t *testing.T) {
+	_, stop, cli, err := setupServer(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	session, _ := Client(cli, nil)
+	stream, _ := session.OpenStream()
+	err = session.EnablePoll()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = session.DisablePoll()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = session.EnablePoll()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	const N = 100
+	var received int
+
+	tx := make([]byte, 128)
+	go func() {
+		for i := 0; i < N; i++ {
+			stream.Write(tx)
+		}
+	}()
+
+	buf := make([]byte, 128)
+	for {
+		streams, err := session.PollWait()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		for _, stream := range streams {
+			for {
+				n, err := stream.ReadNoWait(buf)
+				if err == syscall.EAGAIN {
+					break
+				}
+
+				if err != nil {
+					t.Fatal(err)
+				}
+				received += n
+				if received == len(tx)*N {
+					session.Close()
+					return
+				}
+			}
+		}
+	}
 }
 
 func TestWriteTo(t *testing.T) {
