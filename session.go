@@ -214,7 +214,7 @@ func (s *Session) Close() error {
 
 // EnablePoll
 func (s *Session) EnablePoll() error {
-	if !atomic.CompareAndSwapInt32(&s.dataReady, 0, 1) {
+	if !atomic.CompareAndSwapInt32(&s.pollEnabled, 0, 1) {
 		return ErrPollInEnabled
 	}
 	return nil
@@ -222,7 +222,7 @@ func (s *Session) EnablePoll() error {
 
 // DisblePoll
 func (s *Session) DisablePoll() error {
-	if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
+	if !atomic.CompareAndSwapInt32(&s.pollEnabled, 1, 0) {
 		return ErrPollInDisabled
 	}
 	return nil
@@ -248,7 +248,7 @@ func (s *Session) PollWait() ([]*Stream, error) {
 
 // streams notify session pollin events
 func (s *Session) notifyPoll(ev *Stream) {
-	if atomic.LoadInt32(&s.dataReady) == 1 {
+	if atomic.LoadInt32(&s.pollEnabled) == 1 {
 		s.pollEventsLock.Lock()
 		s.pollEvents = append(s.pollEvents, ev)
 		s.pollEventsLock.Unlock()
