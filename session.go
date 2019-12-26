@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pkg/errors"
+	"errors"
 )
 
 const (
@@ -120,14 +120,14 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 // OpenStream is used to create a new stream
 func (s *Session) OpenStream() (*Stream, error) {
 	if s.IsClosed() {
-		return nil, errors.WithStack(io.ErrClosedPipe)
+		return nil, io.ErrClosedPipe
 	}
 
 	// generate stream id
 	s.nextStreamIDLock.Lock()
 	if s.goAway > 0 {
 		s.nextStreamIDLock.Unlock()
-		return nil, errors.WithStack(ErrGoAway)
+		return nil, ErrGoAway
 	}
 
 	s.nextStreamID += 2
@@ -135,14 +135,14 @@ func (s *Session) OpenStream() (*Stream, error) {
 	if sid == sid%2 { // stream-id overflows
 		s.goAway = 1
 		s.nextStreamIDLock.Unlock()
-		return nil, errors.WithStack(ErrGoAway)
+		return nil, ErrGoAway
 	}
 	s.nextStreamIDLock.Unlock()
 
 	stream := newStream(sid, s.config.MaxFrameSize, s)
 
 	if _, err := s.writeFrame(newFrame(cmdSYN, sid)); err != nil {
-		return nil, errors.WithStack(err)
+		return nil, err
 	}
 
 	s.streamLock.Lock()
@@ -151,7 +151,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 	case <-s.chSocketWriteError:
 		return nil, s.socketWriteError.Load().(error)
 	case <-s.die:
-		return nil, errors.WithStack(io.ErrClosedPipe)
+		return nil, io.ErrClosedPipe
 	default:
 		s.streams[sid] = stream
 		return stream, nil
@@ -177,13 +177,13 @@ func (s *Session) AcceptStream() (*Stream, error) {
 	case stream := <-s.chAccepts:
 		return stream, nil
 	case <-deadline:
-		return nil, errors.WithStack(ErrTimeout)
+		return nil, ErrTimeout
 	case <-s.chSocketReadError:
 		return nil, s.socketReadError.Load().(error)
 	case <-s.chProtoError:
 		return nil, s.protoError.Load().(error)
 	case <-s.die:
-		return nil, errors.WithStack(io.ErrClosedPipe)
+		return nil, io.ErrClosedPipe
 	}
 }
 
@@ -208,7 +208,7 @@ func (s *Session) Close() error {
 		s.streamLock.Unlock()
 		return s.conn.Close()
 	} else {
-		return errors.WithStack(io.ErrClosedPipe)
+		return io.ErrClosedPipe
 	}
 }
 
@@ -234,7 +234,7 @@ func (s *Session) PollWait(events []*Stream) (int, error) {
 			s.pollEventsLock.Unlock()
 			return i, nil
 		case <-s.die:
-			return -1, errors.WithStack(io.ErrClosedPipe)
+			return -1, io.ErrClosedPipe
 		}
 	}
 }
@@ -368,7 +368,7 @@ func (s *Session) recvLoop() {
 		if _, err := io.ReadFull(s.conn, hdr[:]); err == nil {
 			atomic.StoreInt32(&s.dataReady, 1)
 			if hdr.Version() != version {
-				s.notifyProtoError(errors.WithStack(ErrInvalidProtocol))
+				s.notifyProtoError(ErrInvalidProtocol)
 				return
 			}
 			sid := hdr.StreamID()
@@ -404,16 +404,16 @@ func (s *Session) recvLoop() {
 						}
 						s.streamLock.Unlock()
 					} else {
-						s.notifyReadError(errors.WithStack(err))
+						s.notifyReadError(err)
 						return
 					}
 				}
 			default:
-				s.notifyProtoError(errors.WithStack(ErrInvalidProtocol))
+				s.notifyProtoError(ErrInvalidProtocol)
 				return
 			}
 		} else {
-			s.notifyReadError(errors.WithStack(err))
+			s.notifyReadError(err)
 			return
 		}
 	}
@@ -507,7 +507,7 @@ func (s *Session) sendLoop() {
 
 			result := writeResult{
 				n:   n,
-				err: errors.WithStack(err),
+				err: err,
 			}
 
 			request.result <- result
@@ -515,7 +515,7 @@ func (s *Session) sendLoop() {
 
 			// store conn error
 			if err != nil {
-				s.notifyWriteError(errors.WithStack(err))
+				s.notifyWriteError(err)
 				return
 			}
 		}
@@ -538,21 +538,21 @@ func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time, prio ui
 	select {
 	case s.shaper <- req:
 	case <-s.die:
-		return 0, errors.WithStack(io.ErrClosedPipe)
+		return 0, io.ErrClosedPipe
 	case <-s.chSocketWriteError:
 		return 0, s.socketWriteError.Load().(error)
 	case <-deadline:
-		return 0, errors.WithStack(ErrTimeout)
+		return 0, ErrTimeout
 	}
 
 	select {
 	case result := <-req.result:
-		return result.n, errors.WithStack(result.err)
+		return result.n, result.err
 	case <-s.die:
-		return 0, errors.WithStack(io.ErrClosedPipe)
+		return 0, io.ErrClosedPipe
 	case <-s.chSocketWriteError:
 		return 0, s.socketWriteError.Load().(error)
 	case <-deadline:
-		return 0, errors.WithStack(ErrTimeout)
+		return 0, ErrTimeout
 	}
 }

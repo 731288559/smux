@@ -6,8 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/pkg/errors"
 )
 
 // Stream implements net.Conn
@@ -98,7 +96,7 @@ func (s *Stream) TryRead(b []byte) (n int, err error) {
 
 	select {
 	case <-s.die:
-		return 0, errors.WithStack(io.EOF)
+		return 0, io.EOF
 	default:
 		return 0, ErrWouldBlock
 	}
@@ -146,15 +144,15 @@ func (s *Stream) waitRead() error {
 	case <-s.chReadEvent:
 		return nil
 	case <-s.chFinEvent:
-		return errors.WithStack(io.EOF)
+		return io.EOF
 	case <-s.sess.chSocketReadError:
 		return s.sess.socketReadError.Load().(error)
 	case <-s.sess.chProtoError:
 		return s.sess.protoError.Load().(error)
 	case <-deadline:
-		return errors.WithStack(ErrTimeout)
+		return ErrTimeout
 	case <-s.die:
-		return errors.WithStack(io.ErrClosedPipe)
+		return io.ErrClosedPipe
 	}
 
 }
@@ -171,7 +169,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	// check if stream has closed
 	select {
 	case <-s.die:
-		return 0, errors.WithStack(io.ErrClosedPipe)
+		return 0, io.ErrClosedPipe
 	default:
 	}
 
@@ -190,7 +188,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 		s.numWrite++
 		sent += n
 		if err != nil {
-			return sent, errors.WithStack(err)
+			return sent, err
 		}
 	}
 
@@ -211,7 +209,7 @@ func (s *Stream) Close() error {
 		s.sess.streamClosed(s.id)
 		return err
 	} else {
-		return errors.WithStack(io.ErrClosedPipe)
+		return io.ErrClosedPipe
 	}
 }
 
@@ -242,10 +240,10 @@ func (s *Stream) SetWriteDeadline(t time.Time) error {
 // A zero time value disables the deadlines.
 func (s *Stream) SetDeadline(t time.Time) error {
 	if err := s.SetReadDeadline(t); err != nil {
-		return errors.WithStack(err)
+		return err
 	}
 	if err := s.SetWriteDeadline(t); err != nil {
-		return errors.WithStack(err)
+		return err
 	}
 	return nil
 }
