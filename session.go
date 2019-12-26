@@ -17,11 +17,11 @@ const (
 )
 
 var (
-	ErrInvalidProtocol = errors.New("invalid protocol")
-	ErrGoAway          = errors.New("stream id overflows, should start a new connection")
-	ErrTimeout         = errors.New("timeout")
-	ErrPollInEnabled   = errors.New("pollin already enabled")
-	ErrPollInDisabled  = errors.New("pollin already disabled")
+	ErrInvalidProtocol  = errors.New("invalid protocol")
+	ErrGoAway           = errors.New("stream id overflows, should start a new connection")
+	ErrTimeout          = errors.New("timeout")
+	ErrInvalidOperation = errors.New("invalid parameters on poll")
+	ErrWouldBlock       = errors.New("operation would block on IO")
 )
 
 type writeRequest struct {
@@ -81,9 +81,8 @@ type Session struct {
 	writes chan writeRequest
 
 	// Edge-Triggered PollIn support
-	// Streams which become 'readbale', will return from PollWait()
-	pollEnabled       int32 // flag whether poll has enabled
-	pollEvents        []*Stream
+	// Streams which become 'readable', will return from PollWait()
+	pollEvents        map[uint32]*Stream
 	pollEventsLock    sync.Mutex
 	chPollEventNotify chan struct{} // notify new events
 }
@@ -103,6 +102,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s.chSocketWriteError = make(chan struct{})
 	s.chProtoError = make(chan struct{})
 	s.chPollEventNotify = make(chan struct{}, 1)
+	s.pollEvents = make(map[uint32]*Stream)
 
 	if client {
 		s.nextStreamID = 1
@@ -212,51 +212,42 @@ func (s *Session) Close() error {
 	}
 }
 
-// EnablePoll
-func (s *Session) EnablePoll() error {
-	if !atomic.CompareAndSwapInt32(&s.pollEnabled, 0, 1) {
-		return ErrPollInEnabled
-	}
-	return nil
-}
-
-// DisblePoll
-func (s *Session) DisablePoll() error {
-	if !atomic.CompareAndSwapInt32(&s.pollEnabled, 1, 0) {
-		return ErrPollInDisabled
-	}
-	return nil
-}
-
 // PollWait returns streams which became readable
-func (s *Session) PollWait() ([]*Stream, error) {
+func (s *Session) PollWait(events []*Stream) (int, error) {
+	if len(events) == 0 {
+		return -1, ErrInvalidOperation
+	}
+
 	for {
 		select {
 		case <-s.chPollEventNotify:
 			s.pollEventsLock.Lock()
-			events := s.pollEvents
-			s.pollEvents = nil
-			s.pollEventsLock.Unlock()
-			if len(events) > 0 {
-				return events, nil
+			i := 0
+			for id, stream := range s.pollEvents {
+				if i >= len(events) {
+					break
+				}
+				events[i] = stream
+				i++
+				delete(s.pollEvents, id)
 			}
+			s.pollEventsLock.Unlock()
+			return i, nil
 		case <-s.die:
-			return nil, errors.WithStack(io.ErrClosedPipe)
+			return -1, errors.WithStack(io.ErrClosedPipe)
 		}
 	}
 }
 
 // streams notify session pollin events
-func (s *Session) notifyPoll(ev *Stream) {
-	if atomic.LoadInt32(&s.pollEnabled) == 1 {
-		s.pollEventsLock.Lock()
-		s.pollEvents = append(s.pollEvents, ev)
-		s.pollEventsLock.Unlock()
+func (s *Session) notifyPoll(stream *Stream) {
+	s.pollEventsLock.Lock()
+	s.pollEvents[stream.id] = stream
+	s.pollEventsLock.Unlock()
 
-		select {
-		case s.chPollEventNotify <- struct{}{}:
-		default:
-		}
+	select {
+	case s.chPollEventNotify <- struct{}{}:
+	default:
 	}
 }
 
@@ -346,6 +337,11 @@ func (s *Session) streamClosed(sid uint32) {
 	}
 	delete(s.streams, sid)
 	s.streamLock.Unlock()
+
+	// poll remove
+	s.pollEventsLock.Lock()
+	delete(s.pollEvents, sid)
+	s.pollEventsLock.Unlock()
 }
 
 // returnTokens is called by stream to return token after read

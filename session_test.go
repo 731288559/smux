@@ -13,7 +13,6 @@ import (
 	_ "net/http/pprof"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -104,20 +103,6 @@ func TestPoll(t *testing.T) {
 	defer stop()
 	session, _ := Client(cli, nil)
 	stream, _ := session.OpenStream()
-	err = session.EnablePoll()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	err = session.DisablePoll()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	err = session.EnablePoll()
-	if err != nil {
-		log.Fatal(err)
-	}
 
 	const N = 100
 	var received int
@@ -130,16 +115,18 @@ func TestPoll(t *testing.T) {
 	}()
 
 	buf := make([]byte, 128)
+	events := make([]*Stream, 128)
 	for {
-		streams, err := session.PollWait()
+		n, err := session.PollWait(events)
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		for _, stream := range streams {
+		for i := 0; i < n; i++ {
+			stream := events[i]
 			for {
-				n, err := stream.ReadNoWait(buf)
-				if err == syscall.EAGAIN {
+				n, err := stream.TryRead(buf)
+				if err == ErrWouldBlock {
 					break
 				}
 
